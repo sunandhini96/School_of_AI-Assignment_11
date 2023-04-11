@@ -65,6 +65,56 @@ it: 200  | loss 0.74  | Δw: 0.027
 
 # We trained GPT model:
 
+# Sparse attention head class:
+class SparseAttentionHead(nn.Module):
+    """
+    One head of the self-attention layer with sparse attention
+    """
+
+    def __init__(self, head_size, num_embed, block_size, dropout,num_heads):
+        super().__init__()
+        self.num_heads = num_heads
+        self.head_size = head_size
+
+        self.key = nn.Linear(num_embed, head_size * num_heads, bias=False)
+        self.query = nn.Linear(num_embed, head_size * num_heads, bias=False)
+        self.value = nn.Linear(num_embed, head_size * num_heads, bias=False)
+
+        self.register_buffer("tril", torch.tril(torch.ones(block_size, block_size)))
+
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        B, T, C = x.shape
+        k = self.key(x).view(B, self.num_heads,T, self.head_size)
+        q = self.query(x).view(B, self.num_heads,T, self.head_size)
+        v = self.value(x).view(B, self.num_heads,T, self.head_size)
+
+        # Compute attention scores
+        # (B, num_heads, T, head_size) @ (B, num_heads, head_size, T) -> (B, num_heads, T, T)
+        wei = q @ k.transpose(-2, -1) * (self.head_size ** -0.5)
+
+        # Apply sparse mask to attention scores
+        mask = torch.ones(T, T)
+        # Allow each token to attend to itself and the previous tokens
+        for i in range(T):
+            for j in range(i, max(0, i - self.num_heads), -1):
+                mask[i, j] = 1
+        mask = mask.to(x.device)
+        wei = wei.masked_fill(mask == 0, float("-inf"))
+
+        # Tril matrix is used to mask future positions
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
+        wei = F.softmax(wei, dim=-1)
+        wei = self.dropout(wei)
+
+        # Weighted aggregation of the values
+        # (B, num_heads, T, T) @ (B, num_heads, T, head_size) -> (B, num_heads, T, head_size)
+        out = wei @ v
+        # (B, T, num_heads, head_size) -> (B, T, num_heads * head_size)
+        out = out.view(B, T, -1)
+        return out
+
 # Training log :
 
 step          0 | train loss 3.7530 | val loss 7.0727
