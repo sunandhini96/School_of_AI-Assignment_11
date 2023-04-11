@@ -7,7 +7,48 @@ dataset collected from imbd, wikitext data, snli data, cola data datasets. Here 
 
 We trained GPT model:
 
-# Sparse attention head class:
+Old Sparse attention head class :
+
+class SparseAttentionHead(nn.Module):
+    """
+    One head of the sparse self-attention layer
+    """
+
+    def __init__(self, head_size, num_embed, block_size, dropout):
+        super().__init__()
+        self.head_size = head_size
+        self.num_embed = num_embed
+        self.block_size = block_size
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        B, T, C = x.shape
+        k = self.key(x)
+        q = self.query(x)
+
+        # Compute attention scores using sparse tensor operations
+        coo_values = (q.unsqueeze(-2) * k.unsqueeze(-3)).flatten(end_dim=-2) * (C ** -0.5)
+        coo_indices = torch.cartesian_prod(torch.arange(T), torch.arange(T))
+        coo_indices = coo_indices[(coo_indices[:, 0] <= coo_indices[:, 1])]
+
+        # Create a sparse tensor from the attention scores
+        sp_attention = torch.sparse_coo_tensor(
+            coo_indices.t(), coo_values, size=(T, T, B, self.head_size), device=x.device
+        )
+
+        # Multiply sparse attention with value tensor
+        v = self.value(x)
+        out = torch.sparse.mm(sp_attention, v.permute(2, 0, 1, 3)).permute(1, 2, 0, 3)
+
+        # Mask out future positions using tril matrix
+        out = out.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
+        out = F.softmax(out, dim=-1)
+        out = self.dropout(out)
+
+        return out
+
+
+# New Sparse attention head class and output training logs:
 
 class SparseAttentionHead(nn.Module):
     """
