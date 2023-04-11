@@ -13,10 +13,15 @@ import torch.nn.functional as F
 import math
 import torch
 import torch.nn as nn
+import torch
+
+
 
 
 from sklearn.cluster import KMeans
 
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 class AttentionHead(nn.Module):
     """
     One head of the self-attention layer
