@@ -1,75 +1,127 @@
 import torch
-import torch.nn as nn
+from torch import nn
 from torch.nn import functional as F
-#from utils import DEVICE
+from torch.utils.data import Dataset
+import numpy as np
+import random
+import math
+import time
+from typing import Tuple, List
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+import torch
+import torch.nn as nn
 
 
+from sklearn.cluster import KMeans
 
-
-class SparseAttentionHead(nn.Module):
+class AttentionHead(nn.Module):
     """
-    One head of the sparse self-attention layer
+    One head of the self-attention layer
     """
 
     def __init__(self, head_size, num_embed, block_size, dropout):
         super().__init__()
+        self.key = nn.Linear(num_embed, head_size, bias=False)
+        self.query = nn.Linear(num_embed, head_size, bias=False)
+        self.value = nn.Linear(num_embed, head_size, bias=False)
+        # tril is a lower triangular matrix. it is not a parameter
+        # of the model, so we assign it to the module using register_buffer
+        self.register_buffer("tril", torch.tril(torch.ones(block_size, block_size)))
+
+        # let's also add dropout
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        print(x.shape)
+        B, T, C = x.shape
+        k = self.key(x)
+        q = self.query(x)
+        #print(self.head_size)
+        # compute attention scores
+        # (B, T, C) @ (B, C, T) -> (B, T, T)
+        wei = q @ k.transpose(-2, -1) * C**-0.5
+        # Tril matrix (lower triagular matrix) is used to mask 
+        # future positions (setting them to -inf) so that the
+        # decoder "learns" to predict next words
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float("-inf"))  # (B,T,T)
+        wei = F.softmax(wei, dim=-1)  # (B,T,T)
+        wei = self.dropout(wei)
+        # weighted aggregation of the values
+        v = self.value(x)
+        out = wei @ v  # (B,T,T) @ (B,T,C) ---> (B,T,C)
+        return out
+
+class SparseAttentionHead(nn.Module):
+    """
+    One head of the self-attention layer with sparse attention
+    """
+
+    def __init__(self, head_size, num_embed, block_size, dropout,num_heads):
+        super().__init__()
+        self.num_heads = num_heads
         self.head_size = head_size
-        self.num_embed = num_embed
-        self.block_size = block_size
+
+        self.key = nn.Linear(num_embed, head_size * num_heads, bias=False)
+        self.query = nn.Linear(num_embed, head_size * num_heads, bias=False)
+        self.value = nn.Linear(num_embed, head_size * num_heads, bias=False)
+
+        self.register_buffer("tril", torch.tril(torch.ones(block_size, block_size)))
+
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         B, T, C = x.shape
-        k = self.key(x)
-        q = self.query(x)
+        k = self.key(x).view(B, self.num_heads,T, self.head_size)
+        q = self.query(x).view(B, self.num_heads,T, self.head_size)
+        v = self.value(x).view(B, self.num_heads,T, self.head_size)
 
-        # Compute attention scores using sparse tensor operations
-        coo_values = (q.unsqueeze(-2) * k.unsqueeze(-3)).flatten(end_dim=-2) * (C ** -0.5)
-        coo_indices = torch.cartesian_prod(torch.arange(T), torch.arange(T))
-        coo_indices = coo_indices[(coo_indices[:, 0] <= coo_indices[:, 1])]
+        # Compute attention scores
+        # (B, num_heads, T, head_size) @ (B, num_heads, head_size, T) -> (B, num_heads, T, T)
+        wei = q @ k.transpose(-2, -1) * (self.head_size ** -0.5)
 
-        # Create a sparse tensor from the attention scores
-        sp_attention = torch.sparse_coo_tensor(
-            coo_indices.t(), coo_values, size=(T, T, B, self.head_size), device=x.device
-        )
+        # Apply sparse mask to attention scores
+        mask = torch.ones(T, T)
+        # Allow each token to attend to itself and the previous tokens
+        for i in range(T):
+            for j in range(i, max(0, i - self.num_heads), -1):
+                mask[i, j] = 1
+        mask = mask.to(x.device)
+        wei = wei.masked_fill(mask == 0, float("-inf"))
 
-        # Multiply sparse attention with value tensor
-        v = self.value(x)
-        out = torch.sparse.mm(sp_attention, v.permute(2, 0, 1, 3)).permute(1, 2, 0, 3)
+        # Tril matrix is used to mask future positions
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
+        wei = F.softmax(wei, dim=-1)
+        wei = self.dropout(wei)
 
-        # Mask out future positions using tril matrix
-        out = out.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
-        out = F.softmax(out, dim=-1)
-        out = self.dropout(out)
-
+        # Weighted aggregation of the values
+        # (B, num_heads, T, T) @ (B, num_heads, T, head_size) -> (B, num_heads, T, head_size)
+        out = wei @ v
+        # (B, T, num_heads, head_size) -> (B, T, num_heads * head_size)
+        out = out.view(B, T, -1)
         return out
-
-
 
 class MultiHeadAttention(nn.Module):
     """
     Multiple Heads of self-attention in parallel
     """
 
-    def __init__(self, num_heads, head_size, num_embed, block_size, dropout):
+    def __init__(self, head_size, num_embed, block_size, dropout,num_heads):
         super().__init__()
-        self.heads = nn.ModuleList(
-            [
-                SparseAttentionHead(
+        self.heads =  SparseAttentionHead(
                     head_size=head_size,
                     num_embed=num_embed,
                     block_size=block_size,
-                    dropout=dropout,
+                    dropout=dropout,num_heads=num_heads
                 )
-                for _ in range(num_heads)
-            ]
-        )
         self.proj = nn.Linear(num_embed, num_embed)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         # output of the self-attention
-        out = torch.cat([h(x) for h in self.heads], dim=-1)
+        out = self.heads(x)
         # apply the linear projection layer
         out = self.dropout(self.proj(out))
         return out
