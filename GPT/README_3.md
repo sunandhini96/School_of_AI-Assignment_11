@@ -7,7 +7,7 @@ dataset collected from imbd, wikitext data, snli data, cola data datasets. Here 
 
 We trained GPT model:
 
-Training log :
+# Training log :
 
 step          0 | train loss 3.7530 | val loss 7.0727
 step         10 | train loss 3.9015 | val loss 7.3473
@@ -32,7 +32,7 @@ step        190 | train loss 3.9201 | val loss 6.9643
 step        200 | train loss 3.8471 | val loss 6.9533
 
 
-Output :
+# Output :
 
 [PAD] or not bad the film, not probably. < br / > < br / > < br / > preston is never precisely by me, women and dragged proposed an actress have surprise two pilasters in dawson's oils and turns back to quietly empire inctuaries as his contract. " " " " and his ragged reagents, microbes = " " " " = = post @ - @ = = " " " " " = = december – west – aerodrome licensing = = = " "
 
